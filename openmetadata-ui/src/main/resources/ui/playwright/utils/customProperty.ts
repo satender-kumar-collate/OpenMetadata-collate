@@ -318,7 +318,7 @@ export const validateValueForProperty = async (data: {
       endValue
     );
   } else if (propertyType === 'sqlQuery') {
-    await expect(container.locator('.CodeMirror-scroll')).toContainText(value);
+    await expect(container.locator('.cm-editor')).toContainText(value);
   } else if (propertyType === 'table-cp') {
     const values = value.split(',');
 
@@ -985,11 +985,11 @@ export const editColumnCustomProperty = async (
     await editor.blur();
     await page.getByTestId('save').click();
   } else if (propertyType === 'sqlQuery') {
-    const codeMirror = page.locator(
-      '.custom-properties-section-container .CodeMirror'
+    const codeMirrorEditor = page.locator(
+      '.custom-properties-section-container .cm-editor'
     );
-    await expect(codeMirror).toBeVisible();
-    await codeMirror.click();
+    await expect(codeMirrorEditor).toBeVisible();
+    await codeMirrorEditor.locator('.cm-content').click();
     await page.keyboard.type(testValue);
   } else if (propertyType === 'timeInterval') {
     const [start, end] = testValue.split(',');

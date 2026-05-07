@@ -12,17 +12,13 @@
  */
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import React from 'react';
 import SchemaEditor from './SchemaEditor';
 
 const mockOnChange = jest.fn();
 const mockOnCopyToClipBoard = jest.fn();
-
-const mockEditor = {
-  refresh: jest.fn(),
-  scrollTo: jest.fn(),
-  getWrapperElement: jest.fn().mockReturnValue({ remove: jest.fn() }),
-};
+const mockScrollTo = jest.fn();
+const mockRequestMeasure = jest.fn();
+const mockRequestRefresh = jest.fn();
 
 jest.mock('../../../constants/constants', () => ({
   JSON_TAB_SIZE: 25,
@@ -39,26 +35,29 @@ jest.mock('../../../hooks/useClipBoard', () => ({
     .mockImplementation(() => ({ onCopyToClipBoard: mockOnCopyToClipBoard })),
 }));
 
-jest.mock('react-codemirror2', () => ({
-  ...jest.requireActual('react-codemirror2'),
-  Controlled: jest
-    .fn()
-    .mockImplementation(({ value, onChange, editorDidMount }) => {
-      React.useEffect(() => {
-        editorDidMount?.(mockEditor);
-      }, []);
+// Capture the options the hook receives so tests can assert on them
+let capturedOnChange: ((value: string) => void) | undefined;
+let capturedOpts: Record<string, unknown> = {};
 
-      return (
-        <div>
-          <span>{value}</span>
-          <input
-            data-testid="code-mirror-editor-input"
-            type="text"
-            onChange={onChange}
-          />
-        </div>
-      );
-    }),
+jest.mock('../../../hooks/useCodeMirror', () => ({
+  useCodeMirror: jest.fn().mockImplementation((opts) => {
+    capturedOnChange = opts.onChange;
+    capturedOpts = opts;
+
+        return {
+          editorRef: { current: null },
+          viewRef: {
+            current: {
+              scrollDOM: { scrollTo: mockScrollTo },
+              requestMeasure: mockRequestMeasure,
+              state: { doc: { toString: () => opts.value ?? '' } },
+              dispatch: jest.fn(),
+            },
+          },
+          requestRefresh: mockRequestRefresh,
+        };
+      }
+    ),
 }));
 
 let intersectionCallback: (entries: IntersectionObserverEntry[]) => void;
@@ -124,8 +123,7 @@ describe('SchemaEditor component test', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    // Set in beforeEach because jest.useRealTimers() restores the original
-    // (undefined in JSDOM), clobbering a beforeAll assignment.
+    capturedOpts = {};
     window.requestAnimationFrame = jest
       .fn()
       .mockImplementation((cb: FrameRequestCallback) => {
@@ -145,14 +143,6 @@ describe('SchemaEditor component test', () => {
     expect(await screen.findByTestId('query-copy-button')).toBeInTheDocument();
   });
 
-  it('Value provided via props should be visible', async () => {
-    render(<SchemaEditor {...mockProps} />);
-
-    expect(
-      (await screen.findByTestId('code-mirror-container')).textContent
-    ).toBe('test SQL query');
-  });
-
   it('Copy button should not be visible', async () => {
     render(<SchemaEditor {...mockProps} showCopyButton={false} />);
 
@@ -167,18 +157,18 @@ describe('SchemaEditor component test', () => {
     expect(mockOnCopyToClipBoard).toHaveBeenCalled();
   });
 
-  it('Should call onChange handler', async () => {
+  it('Should call onChange handler when user edits', () => {
     render(<SchemaEditor {...mockProps} />);
 
-    fireEvent.change(screen.getByTestId('code-mirror-editor-input'), {
-      target: { value: 'new SQL query' },
+    act(() => {
+      capturedOnChange?.('new SQL query');
     });
 
     expect(mockOnChange).toHaveBeenCalled();
   });
 
   describe('refreshEditor prop', () => {
-    it('Should call scrollTo and refresh when refreshEditor is true', () => {
+    it('Should call requestRefresh when refreshEditor is true', () => {
       jest.useFakeTimers();
       render(<SchemaEditor {...mockProps} refreshEditor />);
 
@@ -186,13 +176,12 @@ describe('SchemaEditor component test', () => {
         jest.advanceTimersByTime(50);
       });
 
-      expect(mockEditor.scrollTo).toHaveBeenCalledWith(0, 0);
-      expect(mockEditor.refresh).toHaveBeenCalled();
+      expect(mockRequestRefresh).toHaveBeenCalled();
 
       jest.useRealTimers();
     });
 
-    it('Should not call refresh if refreshEditor is false', () => {
+    it('Should not call requestRefresh if refreshEditor is false', () => {
       jest.useFakeTimers();
       render(<SchemaEditor {...mockProps} refreshEditor={false} />);
 
@@ -200,25 +189,35 @@ describe('SchemaEditor component test', () => {
         jest.advanceTimersByTime(50);
       });
 
-      expect(mockEditor.refresh).not.toHaveBeenCalled();
+      expect(mockRequestRefresh).not.toHaveBeenCalled();
 
       jest.useRealTimers();
     });
+  });
 
-    it('Should call scrollTo(0,0) via requestAnimationFrame after refresh', () => {
-      jest.useFakeTimers();
-      render(<SchemaEditor {...mockProps} refreshEditor />);
+  describe('readOnly prop', () => {
+    it('should pass readOnly=true when top-level readOnly prop is set', () => {
+      render(<SchemaEditor {...mockProps} readOnly />);
 
-      act(() => {
-        jest.runAllTimers();
-      });
+      expect(capturedOpts.readOnly).toBe(true);
+    });
 
-      // scrollTo called twice: once before refresh, once in rAF after refresh
-      expect(mockEditor.scrollTo).toHaveBeenCalledTimes(2);
-      expect(mockEditor.scrollTo).toHaveBeenNthCalledWith(1, 0, 0);
-      expect(mockEditor.scrollTo).toHaveBeenNthCalledWith(2, 0, 0);
+    it('should fall back to options.readOnly when top-level readOnly is not provided', () => {
+      render(<SchemaEditor {...mockProps} options={{ readOnly: true }} />);
 
-      jest.useRealTimers();
+      expect(capturedOpts.readOnly).toBe(true);
+    });
+
+    it('should prefer top-level readOnly over conflicting options.readOnly', () => {
+      render(
+        <SchemaEditor
+          {...mockProps}
+          readOnly
+          options={{ readOnly: false }}
+        />
+      );
+
+      expect(capturedOpts.readOnly).toBe(true);
     });
   });
 
@@ -226,64 +225,54 @@ describe('SchemaEditor component test', () => {
     it('Should set up IntersectionObserver on mount', () => {
       render(<SchemaEditor {...mockProps} />);
 
-      // intersectionCallback is populated by the constructor, confirming observer was created
       expect(intersectionCallback).toBeDefined();
       expect(mockObserve).toHaveBeenCalled();
     });
 
-    it('Should call refresh and scrollTo when transitioning from hidden to visible', () => {
+    it('Should call requestRefresh when transitioning from hidden to visible', () => {
       render(<SchemaEditor {...mockProps} />);
 
-      mockEditor.refresh.mockClear();
-      mockEditor.scrollTo.mockClear();
+      mockRequestRefresh.mockClear();
 
-      // Simulate element being hidden (display: none → height collapses to 0)
       act(() => {
         intersectionCallback([makeEntry(0)]);
       });
 
-      expect(mockEditor.refresh).not.toHaveBeenCalled();
+      expect(mockRequestRefresh).not.toHaveBeenCalled();
 
-      // Simulate element becoming visible again (height > 0)
       act(() => {
         intersectionCallback([makeEntry(100)]);
       });
 
-      expect(mockEditor.scrollTo).toHaveBeenCalledWith(0, 0);
-      expect(mockEditor.refresh).toHaveBeenCalled();
+      expect(mockRequestRefresh).toHaveBeenCalled();
     });
 
     it('Should not trigger refresh on first visible callback if not previously hidden', () => {
       render(<SchemaEditor {...mockProps} />);
 
-      mockEditor.refresh.mockClear();
-      mockEditor.scrollTo.mockClear();
+      mockRequestRefresh.mockClear();
 
       act(() => {
         intersectionCallback([makeEntry(100)]);
       });
 
-      expect(mockEditor.refresh).not.toHaveBeenCalled();
-      expect(mockEditor.scrollTo).not.toHaveBeenCalled();
+      expect(mockRequestRefresh).not.toHaveBeenCalled();
     });
 
     it('Should not trigger refresh when scrolled out and back into viewport', () => {
       render(<SchemaEditor {...mockProps} />);
 
-      mockEditor.refresh.mockClear();
-      mockEditor.scrollTo.mockClear();
-
-      // Height stays > 0 when scrolled out of viewport (not display:none)
-      act(() => {
-        intersectionCallback([makeEntry(200)]);
-      });
+      mockRequestRefresh.mockClear();
 
       act(() => {
         intersectionCallback([makeEntry(200)]);
       });
 
-      expect(mockEditor.refresh).not.toHaveBeenCalled();
-      expect(mockEditor.scrollTo).not.toHaveBeenCalled();
+      act(() => {
+        intersectionCallback([makeEntry(200)]);
+      });
+
+      expect(mockRequestRefresh).not.toHaveBeenCalled();
     });
 
     it('Should disconnect observer on unmount', () => {

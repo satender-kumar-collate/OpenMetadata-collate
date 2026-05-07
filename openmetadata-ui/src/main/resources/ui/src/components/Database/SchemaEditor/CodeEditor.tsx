@@ -13,26 +13,14 @@
 
 import { Button, Card, Tooltip } from 'antd';
 import classNames from 'classnames';
-import { Editor, EditorChange } from 'codemirror';
-import 'codemirror/addon/edit/closebrackets.js';
-import 'codemirror/addon/edit/matchbrackets.js';
-import 'codemirror/addon/fold/brace-fold';
-import 'codemirror/addon/fold/foldgutter.css';
-import 'codemirror/addon/fold/foldgutter.js';
-import 'codemirror/addon/selection/active-line';
-import 'codemirror/lib/codemirror.css';
-import 'codemirror/mode/clike/clike';
-import 'codemirror/mode/javascript/javascript';
-import 'codemirror/mode/python/python';
-import 'codemirror/mode/sql/sql';
 import { isUndefined } from 'lodash';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Controlled as CodeMirror } from 'react-codemirror2';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ReactComponent as CopyIcon } from '../../../assets/svg/copy-left.svg';
 import { JSON_TAB_SIZE } from '../../../constants/constants';
 import { CSMode } from '../../../enums/codemirror.enum';
 import { useClipboard } from '../../../hooks/useClipBoard';
+import { useCodeMirror } from '../../../hooks/useCodeMirror';
 import { getSchemaEditorValue } from '../../../utils/SchemaEditor.utils';
 import './schema-editor.less';
 import { SchemaEditorProps } from './SchemaEditor.interface';
@@ -45,6 +33,7 @@ const CodeEditor = ({
     json: true,
   },
   options,
+  readOnly,
   editorClass,
   showCopyButton = true,
   onChange,
@@ -52,57 +41,39 @@ const CodeEditor = ({
   refreshEditor,
   title,
 }: SchemaEditorProps) => {
-  const wrapperRef = useRef<CodeMirror | null>(null);
   const { t } = useTranslation();
-  const defaultOptions = {
-    tabSize: JSON_TAB_SIZE,
-    indentUnit: JSON_TAB_SIZE,
-    indentWithTabs: false,
-    lineNumbers: false,
-    lineWrapping: false,
-    styleActiveLine: true,
-    matchBrackets: true,
-    autoCloseBrackets: true,
-    foldGutter: true,
-    mode,
-    readOnly: false,
-    ...options,
-  };
+
   const [internalValue, setInternalValue] = useState<string>(
     getSchemaEditorValue(value)
   );
-  // Store the CodeMirror editor instance
-  const editorInstance = useRef<Editor | null>(null);
+
   const { onCopyToClipBoard, hasCopied } = useClipboard(internalValue);
 
-  const handleEditorInputBeforeChange = (
-    _editor: Editor,
-    _data: EditorChange,
-    value: string
-  ): void => {
-    setInternalValue(getSchemaEditorValue(value));
-  };
-  const handleEditorInputChange = (
-    _editor: Editor,
-    _data: EditorChange,
-    value: string
-  ): void => {
-    if (!isUndefined(onChange)) {
-      onChange(getSchemaEditorValue(value));
-    }
-  };
-
-  const editorWillUnmount = useCallback(() => {
-    if (editorInstance.current) {
-      const editorWrapper = editorInstance.current.getWrapperElement();
-      if (editorWrapper) {
-        editorWrapper.remove();
+  const handleChange = useCallback(
+    (newValue: string) => {
+      setInternalValue(newValue);
+      if (!isUndefined(onChange)) {
+        onChange(newValue);
       }
-    }
-    if (wrapperRef.current) {
-      (wrapperRef.current as unknown as { hydrated: boolean }).hydrated = false;
-    }
-  }, [editorInstance, wrapperRef]);
+    },
+    [onChange]
+  );
+
+  const { editorRef, viewRef, requestRefresh } = useCodeMirror({
+    value: internalValue,
+    mode,
+    readOnly: readOnly ?? (options?.readOnly as boolean) ?? false,
+    showLineNumbers: (options?.lineNumbers as boolean) ?? false,
+    lineWrapping: (options?.lineWrapping as boolean) ?? false,
+    showFoldGutter: false,
+    styleActiveLine: (options?.styleActiveLine as boolean) ?? true,
+    matchBrackets: (options?.matchBrackets as boolean) ?? true,
+    autoCloseBrackets: (options?.autoCloseBrackets as boolean) ?? true,
+    tabSize:
+      options?.tabSize !== undefined ? Number(options.tabSize) : JSON_TAB_SIZE,
+    onChange: handleChange,
+    onFocus,
+  });
 
   useEffect(() => {
     setInternalValue(getSchemaEditorValue(value));
@@ -110,15 +81,13 @@ const CodeEditor = ({
 
   useEffect(() => {
     if (refreshEditor) {
-      // CodeMirror can't measure its container if hidden (e.g., in an inactive tab with display: none).
-      // When the tab becomes visible, the browser may not have finished layout/reflow when this runs.
-      // Delaying refresh by 50ms ensures the editor is visible and DOM is ready for CodeMirror to re-render.
-      // This is a common workaround for editors inside tabbed interfaces.
+      // CM6 can't measure its container if hidden (e.g., in an inactive tab with display: none).
+      // Delaying refresh by 50ms ensures the editor is visible and DOM is ready to re-render.
       setTimeout(() => {
-        editorInstance.current?.refresh();
+        requestRefresh();
       }, 50);
     }
-  }, [refreshEditor]);
+  }, [refreshEditor, requestRefresh]);
 
   return (
     <Card
@@ -137,25 +106,19 @@ const CodeEditor = ({
                 icon={<CopyIcon height={16} width={16} />}
                 size="small"
                 type="text"
-                onClick={onCopyToClipBoard}
+                onClick={() => onCopyToClipBoard()}
               />
             </Tooltip>
           </div>
         )
       }
       title={title}>
-      <CodeMirror
+      <div
         className={editorClass}
-        editorDidMount={(editor) => {
-          editorInstance.current = editor;
-        }}
-        editorWillUnmount={editorWillUnmount}
-        options={defaultOptions}
-        ref={wrapperRef}
-        value={internalValue}
-        onBeforeChange={handleEditorInputBeforeChange}
-        onChange={handleEditorInputChange}
-        {...(onFocus && { onFocus })}
+        data-testid="code-mirror-editor"
+        ref={editorRef}
+        // viewRef used for refresh; expose view via data attribute for tests
+        data-view={viewRef.current ? 'mounted' : 'pending'}
       />
     </Card>
   );
